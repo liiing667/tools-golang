@@ -4,6 +4,8 @@
 package v2_1
 
 import (
+	"encoding/json"
+
 	"github.com/spdx/tools-golang/spdx/v2/common"
 )
 
@@ -67,4 +69,61 @@ type Document struct {
 
 	// DEPRECATED in version 2.0 of spec
 	Reviews []*Review `json:"-"`
+
+	// CustomFields retains unknown (custom or future-version) top-level fields
+	// instead of discarding them. It is populated while unmarshalling and is
+	// emitted inline when marshalling; it never appears as a named property.
+	CustomFields common.Extensions `json:"-" yaml:"-"`
 }
+
+// knownDocumentJSONFields lists every top-level property modeled by the
+// Document struct. Anything else encountered while parsing is preserved in
+// Extensions.
+var knownDocumentJSONFields = map[string]struct{}{
+	"spdxVersion":                {},
+	"dataLicense":                {},
+	"SPDXID":                     {},
+	"name":                       {},
+	"documentNamespace":          {},
+	"externalDocumentRefs":       {},
+	"comment":                    {},
+	"creationInfo":               {},
+	"packages":                   {},
+	"files":                      {},
+	"hasExtractedLicensingInfos": {},
+	"relationships":              {},
+	"annotations":                {},
+	"snippets":                   {},
+}
+
+// UnmarshalJSON decodes the modeled document fields and retains any unknown
+// top-level fields in Extensions rather than discarding them.
+func (d *Document) UnmarshalJSON(b []byte) error {
+	type doc Document
+	var d2 doc
+	if err := json.Unmarshal(b, &d2); err != nil {
+		return err
+	}
+
+	extensions, err := common.CaptureExtensions(b, knownDocumentJSONFields)
+	if err != nil {
+		return err
+	}
+
+	*d = Document(d2)
+	d.CustomFields = extensions
+	return nil
+}
+
+// MarshalJSON emits the modeled document fields with any retained extension
+// fields merged in inline, so unknown properties survive a round-trip without
+// being nested under an extra wrapper property.
+func (d *Document) MarshalJSON() ([]byte, error) {
+	type doc Document
+	return common.MergeExtensions(doc(*d), d.CustomFields)
+}
+
+var (
+	_ json.Unmarshaler = (*Document)(nil)
+	_ json.Marshaler   = (*Document)(nil)
+)

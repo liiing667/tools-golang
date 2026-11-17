@@ -14,6 +14,29 @@ const (
 	documentRefPrefix = "DocumentRef-"
 )
 
+// hasPrefixFold reports whether s begins with prefix, comparing ASCII letters
+// case-insensitively. It is used so that an identifier written with a different
+// casing for its mandatory prefix (e.g. "spdxref-", "SpdxRef-" or
+// "documentref-") is accepted and normalized consistently by every reader.
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		a, b := s[i], prefix[i]
+		if a >= 'a' && a <= 'z' {
+			a -= 'a' - 'A'
+		}
+		if b >= 'a' && b <= 'z' {
+			b -= 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
+}
+
 // DocumentID represents the identifier string portion of an SPDX document
 // identifier. DocumentID should be used for reference to a SPDX document.
 // DocumentIDs should NOT contain the mandatory 'DocumentRef-' portion.
@@ -50,7 +73,7 @@ func prefixDocumentId(id DocumentID) string {
 // trimDocumentIdPrefix removes the DocumentRef- prefix from an document ID string and
 // returns an error if the prefix isn't present or if the resulting ID is empty.
 func trimDocumentIdPrefix(id string) (DocumentID, error) {
-	idWithoutPrefix, found := strings.CutPrefix(id, documentRefPrefix)
+	idWithoutPrefix, found := cutPrefixFold(id, documentRefPrefix)
 	if !found || idWithoutPrefix == "" {
 		return DocumentID(""), fmt.Errorf("failed to parse DocumentID: %s", id)
 	}
@@ -94,11 +117,27 @@ func prefixElementId(id ElementID) string {
 // trimElementIdPrefix removes the SPDXRef- prefix from an element ID string and
 // returns an error if the prefix isn't present or if the resulting ID is empty.
 func trimElementIdPrefix(id string) (ElementID, error) {
-	idWithoutPrefix, found := strings.CutPrefix(id, spdxRefPrefix)
+	idWithoutPrefix, found := cutPrefixFold(id, spdxRefPrefix)
 	if !found || idWithoutPrefix == "" {
 		return ElementID(""), fmt.Errorf("failed to parse ElementID: %s", id)
 	}
 	return ElementID(idWithoutPrefix), nil
+}
+
+// cutPrefixFold is a case-insensitive (ASCII) variant of strings.CutPrefix.
+// It returns the remainder after the prefix and whether the prefix was present.
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if !hasPrefixFold(s, prefix) {
+		return s, false
+	}
+	return s[len(prefix):], true
+}
+
+// TrimDocumentRefPrefix removes a case-insensitive "DocumentRef-" prefix from
+// id and returns the remainder together with whether the prefix was present.
+// It lets every reader normalize document references consistently.
+func TrimDocumentRefPrefix(id string) (string, bool) {
+	return cutPrefixFold(id, documentRefPrefix)
 }
 
 // DocElementID represents an SPDX element identifier that could be defined
@@ -152,7 +191,7 @@ func (d *DocElementID) UnmarshalJSON(data []byte) error {
 
 	var idFields []string
 	// handle DocumentRef- if present
-	if strings.HasPrefix(idStr, documentRefPrefix) {
+	if hasPrefixFold(idStr, documentRefPrefix) {
 		// an SPDXRef can appear after a DocumentRef, separated by a colon
 		idFields = strings.SplitN(idStr, ":", 2)
 
@@ -195,6 +234,74 @@ func MakeDocElementID(docRef string, eltRef string) DocElementID {
 // be empty.
 func MakeDocElementSpecial(specialID string) DocElementID {
 	return DocElementID{SpecialID: specialID}
+}
+
+// ParseElementID parses an SPDX element identifier, normalizing the mandatory
+// "SPDXRef-" prefix so that any casing of the prefix is accepted. It is the
+// single parsing entry point shared by every reader and returns an error when
+// the prefix is missing, the identifier is empty, or it contains a colon.
+func ParseElementID(value string) (ElementID, error) {
+	eltRefID, found := cutPrefixFold(value, spdxRefPrefix)
+	if !found {
+		return ElementID(""), fmt.Errorf("missing SPDXRef- prefix for element identifier: %s", value)
+	}
+	if strings.Contains(eltRefID, ":") {
+		return ElementID(""), fmt.Errorf("invalid colon in element identifier: %s", value)
+	}
+	if eltRefID == "" {
+		return ElementID(""), fmt.Errorf("element identifier has nothing after prefix: %s", value)
+	}
+	return ElementID(eltRefID), nil
+}
+
+// ParseDocElementID parses an SPDX identifier that may refer to another
+// document, normalizing the mandatory "DocumentRef-" and "SPDXRef-" prefixes so
+// that any casing is accepted. It is the single parsing entry point shared by
+// every reader.
+func ParseDocElementID(value string) (DocElementID, error) {
+	docRefID := ""
+	idStr := value
+
+	// check prefix to see if it's a DocumentRef ID
+	if _, found := cutPrefixFold(idStr, documentRefPrefix); found {
+		// extract the part that comes between "DocumentRef-" and ":"
+		strs := strings.Split(idStr, ":")
+		// should be exactly two, part before and part after
+		if len(strs) < 2 {
+			return DocElementID{}, fmt.Errorf("no colon found although DocumentRef- prefix present")
+		}
+		if len(strs) > 2 {
+			return DocElementID{}, fmt.Errorf("more than one colon found")
+		}
+
+		// trim the prefix and confirm non-empty
+		docRefID, _ = cutPrefixFold(strs[0], documentRefPrefix)
+		if docRefID == "" {
+			return DocElementID{}, fmt.Errorf("document identifier has nothing after prefix")
+		}
+		// and use remainder for element ID parsing
+		idStr = strs[1]
+	}
+
+	eltRefID, err := ParseElementID(idStr)
+	if err != nil {
+		return DocElementID{}, err
+	}
+
+	return DocElementID{DocumentRefID: DocumentID(docRefID), ElementRefID: eltRefID}, nil
+}
+
+// ParseDocElementSpecial parses an SPDX identifier or one of the permitted
+// "special" values (e.g. "NONE" and "NOASSERTION" on the right-hand side of a
+// Relationship). Special values are matched case-sensitively, matching the
+// SPDX spec; anything else falls back to ParseDocElementID.
+func ParseDocElementSpecial(value string, permittedSpecial []string) (DocElementID, error) {
+	for _, sp := range permittedSpecial {
+		if sp == value {
+			return DocElementID{SpecialID: sp}, nil
+		}
+	}
+	return ParseDocElementID(value)
 }
 
 // RenderElementID takes an ElementID and returns the string equivalent,

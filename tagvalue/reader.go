@@ -16,6 +16,7 @@ import (
 	v2_2_reader "github.com/spdx/tools-golang/spdx/v2/v2_2/tagvalue/reader"
 	"github.com/spdx/tools-golang/spdx/v2/v2_3"
 	v2_3_reader "github.com/spdx/tools-golang/spdx/v2/v2_3/tagvalue/reader"
+	"github.com/spdx/tools-golang/spdxlib"
 	"github.com/spdx/tools-golang/tagvalue/reader"
 )
 
@@ -67,5 +68,14 @@ func ReadInto(content io.Reader, doc common.AnyDocument) error {
 		return err
 	}
 
-	return convert.Document(data.(common.AnyDocument), doc)
+	if err := convert.Document(data.(common.AnyDocument), doc); err != nil {
+		return err
+	}
+
+	// apply the shared, reader-independent normalization so that documents
+	// read from tag-value match those read from JSON or YAML
+	if target, ok := doc.(*spdx.Document); ok {
+		spdxlib.NormalizeDocument(target)
+	}
+	return nil
 }

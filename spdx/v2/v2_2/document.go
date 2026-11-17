@@ -71,6 +71,11 @@ type Document struct {
 
 	// DEPRECATED in version 2.0 of spec
 	Reviews []*Review `json:"-"`
+
+	// CustomFields retains unknown (custom or future-version) top-level fields
+	// instead of discarding them. It is populated while unmarshalling and is
+	// emitted inline when marshalling; it never appears as a named property.
+	CustomFields common.Extensions `json:"-" yaml:"-"`
 }
 
 func From_v2_1(_ v2_1.Document, d *Document) {
@@ -98,6 +103,13 @@ func (d *Document) UnmarshalJSON(b []byte) error {
 	}
 
 	*d = Document(d2)
+
+	// retain any unknown top-level fields rather than dropping them
+	extensions, err := common.CaptureExtensions(b, knownDocumentJSONFields)
+	if err != nil {
+		return err
+	}
+	d.CustomFields = extensions
 
 	relationshipExists := map[string]bool{}
 	serializeRel := func(r *Relationship) string {
@@ -175,3 +187,35 @@ func (d *Document) UnmarshalJSON(b []byte) error {
 }
 
 var _ json.Unmarshaler = (*Document)(nil)
+
+// knownDocumentJSONFields lists every top-level property modeled by the
+// Document struct (including the virtual documentDescribes and hasFiles
+// fields handled by the custom unmarshaller). Anything else encountered while
+// parsing is preserved in CustomFields.
+var knownDocumentJSONFields = map[string]struct{}{
+	"spdxVersion":                {},
+	"dataLicense":                {},
+	"SPDXID":                     {},
+	"name":                       {},
+	"documentNamespace":          {},
+	"externalDocumentRefs":       {},
+	"comment":                    {},
+	"creationInfo":               {},
+	"packages":                   {},
+	"files":                      {},
+	"hasExtractedLicensingInfos": {},
+	"relationships":              {},
+	"annotations":                {},
+	"snippets":                   {},
+	"documentDescribes":          {},
+}
+
+// MarshalJSON emits the modeled document fields with any retained extension
+// fields merged in inline, so unknown properties survive a round-trip without
+// being nested under an extra wrapper property.
+func (d *Document) MarshalJSON() ([]byte, error) {
+	type doc Document
+	return common.MergeExtensions(doc(*d), d.CustomFields)
+}
+
+var _ json.Marshaler = (*Document)(nil)

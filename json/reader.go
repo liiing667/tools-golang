@@ -16,6 +16,7 @@ import (
 	"github.com/spdx/tools-golang/spdx/v2/v2_2"
 	"github.com/spdx/tools-golang/spdx/v2/v2_3"
 	"github.com/spdx/tools-golang/spdx/v3/v3_0"
+	"github.com/spdx/tools-golang/spdxlib"
 )
 
 // Read takes an io.Reader and returns a fully-parsed current model SPDX Document
@@ -112,5 +113,14 @@ func ReadInto(content io.Reader, doc common.AnyDocument) error {
 		return fmt.Errorf("unsupported SDPX version: %s", version)
 	}
 
-	return convert.Document(data, doc)
+	if err := convert.Document(data, doc); err != nil {
+		return err
+	}
+
+	// apply the shared, reader-independent normalization so that documents
+	// read from JSON match those read from YAML or tag-value
+	if target, ok := doc.(*spdx.Document); ok {
+		spdxlib.NormalizeDocument(target)
+	}
+	return nil
 }

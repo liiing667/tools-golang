@@ -146,11 +146,13 @@ func extractExternalDocumentReference(value string) (string, string, string, str
 	}
 
 	// additionally, we should be able to parse the first element as a
-	// DocumentRef- ID string, and we should remove that prefix
-	if !strings.HasPrefix(documentRefID, "DocumentRef-") {
+	// DocumentRef- ID string, and we should remove that prefix. The prefix
+	// match is case-insensitive so all readers normalize it identically.
+	trimmed, found := common.TrimDocumentRefPrefix(documentRefID)
+	if !found {
 		return "", "", "", "", fmt.Errorf("expected first element to have DocumentRef- prefix")
 	}
-	documentRefID = strings.TrimPrefix(documentRefID, "DocumentRef-")
+	documentRefID = trimmed
 	if documentRefID == "" {
 		return "", "", "", "", fmt.Errorf("document identifier has nothing after prefix")
 	}
