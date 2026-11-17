@@ -247,3 +247,157 @@ func TestDocumentWithNilEntriesStillCatchesBadReference(t *testing.T) {
 		t.Fatal("expected an error for a relationship pointing at a missing element")
 	}
 }
+
+// Snippets are elements defined in the document, so relationships referencing
+// them must resolve through the same element index as packages and files.
+func TestDocumentWithSnippetRelationshipPassesValidation(t *testing.T) {
+	doc := &spdx.Document{
+		SPDXVersion:    spdx.Version,
+		DataLicense:    spdx.DataLicense,
+		SPDXIdentifier: common.ElementID("DOCUMENT"),
+		CreationInfo:   &spdx.CreationInfo{},
+		Files: []*spdx.File{
+			{FileName: "file1", FileSPDXIdentifier: "f1"},
+		},
+		Snippets: []spdx.Snippet{
+			{SnippetSPDXIdentifier: "s1", SnippetFromFileSPDXIdentifier: "f1"},
+		},
+		Relationships: []*spdx.Relationship{
+			{
+				RefA:         common.MakeDocElementID("", "s1"),
+				RefB:         common.MakeDocElementSpecial("NOASSERTION"),
+				Relationship: "GENERATED_FROM",
+			},
+			{
+				RefA:         common.MakeDocElementID("", "f1"),
+				RefB:         common.MakeDocElementID("", "s1"),
+				Relationship: "CONTAINS",
+			},
+		},
+	}
+
+	if err := ValidateDocument(doc); err != nil {
+		t.Fatalf("expected nil error, got: %s", err.Error())
+	}
+}
+
+// A relationship endpoint that looks like a snippet ID but is never defined
+// must still be rejected, rather than being treated as a trusted reference.
+func TestDocumentWithDanglingSnippetReferenceFailsValidation(t *testing.T) {
+	doc := &spdx.Document{
+		SPDXVersion:    spdx.Version,
+		DataLicense:    spdx.DataLicense,
+		SPDXIdentifier: common.ElementID("DOCUMENT"),
+		CreationInfo:   &spdx.CreationInfo{},
+		Packages: []*spdx.Package{
+			{PackageName: "pkg1", PackageSPDXIdentifier: "p1"},
+		},
+		Relationships: []*spdx.Relationship{
+			{
+				RefA:         common.MakeDocElementID("", "p1"),
+				RefB:         common.MakeDocElementID("", "s404"),
+				Relationship: "CONTAINS",
+			},
+		},
+	}
+
+	if err := ValidateDocument(doc); err == nil {
+		t.Fatal("expected an error for a relationship pointing at an undefined snippet")
+	}
+}
+
+// A DocumentRef- endpoint is valid only when the External Document Reference
+// is declared; the external element itself cannot be resolved locally.
+func TestDocumentWithExternalDocumentReferencePassesValidation(t *testing.T) {
+	doc := &spdx.Document{
+		SPDXVersion:    spdx.Version,
+		DataLicense:    spdx.DataLicense,
+		SPDXIdentifier: common.ElementID("DOCUMENT"),
+		CreationInfo:   &spdx.CreationInfo{},
+		ExternalDocumentReferences: []spdx.ExternalDocumentRef{
+			{
+				DocumentRefID: "external-doc",
+				URI:           "http://example.org/external.spdx",
+				Checksum:      common.Checksum{Algorithm: common.SHA1, Value: "d6a770ba38583ed4bb4525bd96e50461655d2759"},
+			},
+		},
+		Relationships: []*spdx.Relationship{
+			{
+				RefA:         common.MakeDocElementID("", "DOCUMENT"),
+				RefB:         common.MakeDocElementID("external-doc", "external-pkg"),
+				Relationship: "COPY_OF",
+			},
+			// DocumentRef- endpoints are also legitimate on the left side.
+			{
+				RefA:         common.MakeDocElementID("external-doc", "external-pkg"),
+				RefB:         common.MakeDocElementSpecial("NONE"),
+				Relationship: "DEPENDS_ON",
+			},
+		},
+	}
+
+	if err := ValidateDocument(doc); err != nil {
+		t.Fatalf("expected nil error, got: %s", err.Error())
+	}
+}
+
+// A DocumentRef- that no External Document Reference declares is a dangling
+// reference and must make the document fail validation.
+func TestDocumentWithUndeclaredDocumentRefFailsValidation(t *testing.T) {
+	tests := map[string]struct {
+		refA common.DocElementID
+		refB common.DocElementID
+	}{
+		"undeclared DocumentRef on right side": {
+			refA: common.MakeDocElementID("", "DOCUMENT"),
+			refB: common.MakeDocElementID("missing-doc", "external-pkg"),
+		},
+		"undeclared DocumentRef on left side": {
+			refA: common.MakeDocElementID("missing-doc", "external-pkg"),
+			refB: common.MakeDocElementSpecial("NONE"),
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			doc := &spdx.Document{
+				SPDXVersion:    spdx.Version,
+				DataLicense:    spdx.DataLicense,
+				SPDXIdentifier: common.ElementID("DOCUMENT"),
+				CreationInfo:   &spdx.CreationInfo{},
+				Relationships: []*spdx.Relationship{
+					{RefA: tc.refA, RefB: tc.refB, Relationship: "COPY_OF"},
+				},
+			}
+
+			if err := ValidateDocument(doc); err == nil {
+				t.Fatal("expected an error for an undeclared DocumentRef-")
+			}
+		})
+	}
+}
+
+// A DocumentRef- that is declared but points at the wrong reference must not
+// be silently accepted: only the declared DocumentRef- ID is resolvable.
+func TestDocumentWithMismatchedDocumentRefFailsValidation(t *testing.T) {
+	doc := &spdx.Document{
+		SPDXVersion:    spdx.Version,
+		DataLicense:    spdx.DataLicense,
+		SPDXIdentifier: common.ElementID("DOCUMENT"),
+		CreationInfo:   &spdx.CreationInfo{},
+		ExternalDocumentReferences: []spdx.ExternalDocumentRef{
+			{DocumentRefID: "declared-doc"},
+		},
+		Relationships: []*spdx.Relationship{
+			{
+				RefA:         common.MakeDocElementID("", "DOCUMENT"),
+				RefB:         common.MakeDocElementID("other-doc", "external-pkg"),
+				Relationship: "COPY_OF",
+			},
+		},
+	}
+
+	if err := ValidateDocument(doc); err == nil {
+		t.Fatal("expected an error for a DocumentRef- that does not match a declaration")
+	}
+}
